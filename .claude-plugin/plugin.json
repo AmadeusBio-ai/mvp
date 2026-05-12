@@ -1,0 +1,8 @@
+{
+  "name": "amadeusbio-mvp",
+  "description": "Agentic bioinformatics toolkit for Claude Code: drive PyMOL via socket plugin, query UniProt and AlphaFold DB, and download protein structures by family.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Yangyi Liu"
+  }
+}
