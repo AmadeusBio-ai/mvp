@@ -18,8 +18,8 @@ AmadeusBio.ai is a coding agent (i.e Claude Code) based plugin that provides the
 Clone the repo, then point Claude Code at it with `--plugin-dir`:
 
 ```bash
-git clone https://github.com/starryark/AmadeusBio_mvp.git
-claude --plugin-dir ./AmadeusBio_mvp
+git clone https://github.com/starryark/AmadeusBio.ai_mvp.git
+claude --plugin-dir ./AmadeusBio.ai_mvp
 ```
 
 Inside Claude Code, the bundled skills are available under the `amadeusbio-mvp:` namespace, e.g. `/amadeusbio-mvp:pymol-molecular-visualization`. The two agents (`PyMol-Software-Operator`, `protein-structure-downloader`) are auto-discovered and triggered by description-match.
