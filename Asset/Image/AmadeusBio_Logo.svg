@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 134.18 133.77">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: #335177;
+      }
+
+      .cls-2 {
+        fill: #001c40;
+      }
+
+      .cls-3 {
+        fill: #ccd4dd;
+      }
+
+      .cls-4 {
+        fill: #99a8bb;
+      }
+
+      .cls-5 {
+        fill: #667d99;
+      }
+
+      .cls-6 {
+        fill: #002655;
+      }
+    </style>
+  </defs>
+  <rect class="cls-3" width="40" height="40"/>
+  <rect class="cls-6" x=".18" y="46.77" width="40" height="40"/>
+  <rect class="cls-1" x=".18" y="93.77" width="40" height="40"/>
+  <rect class="cls-4" x="47.7" y="46.77" width="40" height="40"/>
+  <rect class="cls-2" x="47.18" y="93.77" width="40" height="40"/>
+  <rect class="cls-5" x="94.18" y="93.77" width="40" height="40"/>
+</svg>
