@@ -1,5 +1,5 @@
-![AmadeusBio.ai Logo Light](assets/Horizontal_Logo.svg#gh-light-mode-only)
-![AmadeusBio.ai Logo Dark](assets/Horizontal_Logo_Dark.svg#gh-dark-mode-only)
+![AmadeusBio.ai Logo Light](src/assets/Horizontal_Logo.svg#gh-light-mode-only)
+![AmadeusBio.ai Logo Dark](src/assets/Horizontal_Logo_Dark.svg#gh-dark-mode-only)
 
 # Overview
 
