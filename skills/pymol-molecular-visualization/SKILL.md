@@ -195,6 +195,90 @@ _result = cmd.align('mob', 'tgt')[0] # rmsd as a float
 
 PyMOL frequently prints errors like `Selector-Error: Invalid selection name 'foo'` or `ExecutiveLoad-Error: Unable to open file` to stdout **without raising**. The plugin reports `executed: True` for these, and the helper exits 0. `pymol_send.py` scans output against `SILENT_ERROR_PATTERNS` (selection errors, object-not-found, file errors, parameter errors, syntax errors, fetch errors) and writes a `WARNING:` line to stderr. Always check stderr in addition to the exit code.
 
+## Local structure library (`./structures/`)
+
+This skill is designed around a **canonical local library of pre-curated PDB files** that lives at `./structures/` (relative to the project root). When the user names a protein without a path, **always look here first** — this avoids redundant network fetches, captures organism/family context the user has already curated, and ensures the same exact file is used across runs.
+
+### Layout
+
+```
+./structures/
+├── <protein_family>_<organism>/
+│   ├── <protein_name>_<UniProt_ID>.pdb
+│   ├── <protein_name>_<UniProt_ID>.pdb
+│   ├── manifest.csv
+│   ├── manifest.json
+│   └── manifest.tsv
+├── <protein_family>_<organism>/
+│   └── ...
+```
+
+- **Folders** group structures by family and source organism, e.g. `kinase_human/`, `gpcr_mouse/`, `hemoglobin_human/`.
+- **Files** are named `<protein_name>_<UniProt_ID>.pdb`, e.g. `EGFR_P00533.pdb`, `HBA1_P69905.pdb`. The UniProt ID disambiguates isoforms and species variants.
+- **Manifests** (`manifest.csv`, `manifest.json`, `manifest.tsv`) sit alongside the PDB files and carry per-structure metadata (source PDB ID, resolution, construct boundaries, mutations, ligands present, notes). All three formats encode the same content — pick whichever parses easiest for the task.
+
+### Resolution order
+
+When the user asks to load a protein, follow this order:
+
+1. **Glob `./structures/*/<protein>_*.pdb`** (case-insensitive). Prefer the exact name match; on ambiguity, also try `./structures/*/*<protein>*_*.pdb` and surface the matches.
+2. **If exactly one match**, load it with `cmd.load('<absolute_path>', '<obj_name>')`. Use the protein name (lowercased) as the object name unless the user specifies otherwise.
+3. **If multiple matches** (e.g. same protein across organisms or families), read the relevant `manifest.csv`/`manifest.json`/`manifest.tsv` to disambiguate and pick the right one, or list the candidates and ask the user.
+4. **If zero matches**, fall back to `cmd.fetch(<pdb_id>, async_=0)` only when the user supplied a PDB ID or explicitly asked to fetch from the RCSB.
+
+Do **not** silently fetch from the network when a local match exists — the local file is canonical.
+
+### Recipe: Resolve and load a protein from `./structures/`
+
+Run the glob in the shell first to confirm the path, then `cmd.load` it:
+
+```bash
+# In the shell — resolve the file path before sending to PyMOL.
+PROTEIN_NAME="EGFR"
+MATCHES=( ./structures/*/"${PROTEIN_NAME}"_*.pdb )
+case "${#MATCHES[@]}" in
+  0) echo "no local match for ${PROTEIN_NAME}; consider cmd.fetch with a PDB ID" ;;
+  1) echo "loading: ${MATCHES[0]}" ;;
+  *) printf 'multiple matches:\n'; printf '  %s\n' "${MATCHES[@]}" ;;
+esac
+```
+
+Then send the load over the socket using the absolute path:
+
+```python
+import os
+pdb_path = os.path.abspath('./structures/kinase_human/EGFR_P00533.pdb')
+cmd.delete('all')
+cmd.load(pdb_path, 'egfr')
+cmd.show_as('cartoon', 'egfr')
+cmd.orient('egfr')
+_result = {
+    'object':  'egfr',
+    'source':  pdb_path,
+    'chains':  cmd.get_chains('egfr'),
+    'n_atoms': cmd.count_atoms('egfr'),
+}
+```
+
+### Recipe: Consult the manifest for extra metadata
+
+```python
+import csv, os
+folder = os.path.abspath('./structures/kinase_human')
+with open(os.path.join(folder, 'manifest.csv'), newline='') as f:
+    rows = list(csv.DictReader(f))
+_result = [r for r in rows if r.get('uniprot_id') == 'P00533']
+```
+
+Equivalent JSON path:
+
+```python
+import json, os
+with open(os.path.abspath('./structures/kinase_human/manifest.json')) as f:
+    manifest = json.load(f)
+_result = [entry for entry in manifest if entry.get('uniprot_id') == 'P00533']
+```
+
 ## Common recipes
 
 ### Recipe: Publication figure for a single structure
@@ -342,11 +426,14 @@ _result = info
 | Stale artifacts in a fresh render (old colors, leftover surfaces) | Persistent state from prior sends in the same PyMOL session | `cmd.delete('all')` for a full reset, or `cmd.delete('name')` to drop one object. |
 | Single-line `--code` fails with shell-quoting errors on Windows | Embedded quotes/parentheses mangled by `cmd.exe` or PowerShell | Pipe via stdin with a heredoc instead of `--code`; the helper reads stdin when `--code` is omitted. |
 | `ERROR: cmd.reinitialize() is blocked` (exit 1) | Code blob contained `cmd.reinitialize` | Replace with `cmd.delete('all')` — the same reset without the crash. |
+| `cmd.load` silently failed / "Unable to open file" for a `./structures/` path | Relative path resolved against PyMOL's CWD, not the agent's | Always pass an absolute path: `os.path.abspath('./structures/<family>_<organism>/<protein>_<UniProt>.pdb')`. |
+| Glob in `./structures/*/<protein>_*.pdb` returned multiple files | Same protein name across organisms or families | Read the relevant `manifest.{csv,json,tsv}` to pick the right one, or list candidates and ask the user. |
 
 ## Bundled resources
 
 - `scripts/pymol_send.py` — stdlib-only Python helper. Opens a TCP socket to the PyMOL MCP Socket Plugin on `localhost:9876`, ships a code blob, prints captured stdout (or `_result`). Detects silent PyMOL errors via `SILENT_ERROR_PATTERNS` and emits `WARNING:` on stderr. Includes a `--fetch-pdb` convenience that wraps `cmd.fetch(..., async_=0) + show_as cartoon + orient`. Blocks `cmd.reinitialize` locally before sending. Exit codes: `0` success, `1` PyMOL/exec error, `2` connection error.
 - `scripts/pymol_launch.py` — stdlib-only launcher. Checks `localhost:9876`; if unavailable, spawns `pymol -d "mcp_start"` detached and waits for the socket. No-op when PyMOL is already listening. Exit codes: `0` ready, `1` did not come up, `2` `pymol` binary not found.
+- `./structures/` — project-root directory holding the curated local PDB library. Subfolders follow `<protein_family>_<organism>/`, files follow `<protein_name>_<UniProt_ID>.pdb`, with per-folder `manifest.csv`/`manifest.json`/`manifest.tsv` describing the contents. Always check here before reaching for `cmd.fetch`.
 
 ## Related skills
 
