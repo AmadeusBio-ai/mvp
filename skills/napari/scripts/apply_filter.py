@@ -1,15 +1,21 @@
 """Apply a common image filter and add the result as a new layer.
 
-Paste this file into ``execute_code``, then call:
+Use as a function library inside a code blob sent via ``napari_client.py``.
+The simplest pattern is to append a call to the end of the file and send the
+whole thing with ``--file``:
 
-    apply_filter("cells", "gaussian", sigma=2)
-    apply_filter("cells", "median", size=3)
-    apply_filter("cells", "threshold_otsu")        # adds Labels (binary)
-    apply_filter("cells_thresh", "label")          # connected components
+    # at the bottom of the snippet you actually send:
+    import json
+    print(json.dumps(apply_filter("cells", "threshold_otsu")))
+
+then:
+
+    python skills/napari/scripts/napari_client.py --file my_snippet.py
 
 Assumes the standard pre-bound names: ``viewer``, ``napari``, ``np``.
-Requires ``scipy`` and ``scikit-image`` — install via the ``install_packages``
-tool first if missing.
+Requires ``scipy`` and ``scikit-image`` — there is no in-band installer in the
+new plugin, so install them into napari's env from a terminal
+(``pip install scipy scikit-image``) and restart napari if they're missing.
 """
 
 from __future__ import annotations

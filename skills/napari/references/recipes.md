@@ -1,124 +1,148 @@
-# napari-mcp recipes
+# napari recipes
 
-End-to-end tool sequences. Each recipe lists the tool calls in order and the expected response shape. Adapt names, paths, and parameters to your task.
+Each recipe is a self-contained `code` blob to send via `napari_client.py`. The exec namespace is fresh per call (see [protocol.md](protocol.md)), so each recipe collapses what used to be multi-tool sequences into a single Python block. Adapt names, paths, and parameters to your task.
 
----
+Run any of these by writing the blob to a file (or via heredoc) and sending it with:
 
-## 1. Load → set colormap → screenshot
-
-```text
-session_information               → confirm session_type
-init_viewer                       → only if standalone and no viewer
-add_layer(layer_type="image", path="/path/to/img.tif")
-                                  → {"status":"ok","name":"img","shape":[...]}
-set_layer_properties(name="img", colormap="viridis",
-                     contrast_limits=[0, 4096])
-                                  → {"status":"ok","name":"img"}
-configure_viewer(reset_view=True) → fit camera to data
-screenshot()                      → ImageContent (PNG, ≤150 KB)
+```bash
+python skills/napari/scripts/napari_client.py --file recipe.py
 ```
 
-(Same shape as `docs/examples/direct_mcp_client.py`, but using `add_layer` for path loading instead of `execute_code`.)
+---
+
+## 1. Load image → set colormap → screenshot
+
+```python
+viewer.open("/path/to/img.tif")
+l = viewer.layers[-1]                       # the layer just added
+l.colormap = "viridis"
+l.contrast_limits = [0, 4096]
+viewer.reset_view()
+viewer.screenshot(path="/tmp/img_view.png", canvas_only=True)
+_result = {"layer": l.name, "shape": tuple(l.data.shape), "screenshot": "/tmp/img_view.png"}
+```
+
+Read the PNG on the Claude side: `Read /tmp/img_view.png`.
 
 ---
 
-## 2. Filter via `execute_code` → add as new Labels layer
+## 2. Filter via scipy/skimage → add as new Labels layer
 
-The `execute_code` namespace persists, so you can compute an array, then reference it from `add_layer(data_var=...)`. (Mirrors the multi-step pattern in `tests/test_integration.py::test_execute_code_adds_layer_visible_via_tools`.)
-
-```text
-add_layer(layer_type="image", path="/path/to/cells.tif")
-                                  → name="cells"
-execute_code("""
+```python
 from skimage.filters import threshold_otsu
 from skimage.measure import label
-img = viewer.layers['cells'].data
-mask = img > threshold_otsu(img)
-seg = label(mask)
-""")                              → {"status":"ok",...}
-add_layer(layer_type="labels", data_var="seg", name="cells_seg")
-                                  → {"status":"ok","name":"cells_seg",...}
+
+img = np.asarray(viewer.layers["cells"].data)
+thr = float(threshold_otsu(img))
+mask = (img > thr).astype(np.uint8)
+viewer.add_labels(mask, name="cells_otsu")
+labels = label(mask).astype(np.int32)
+viewer.add_labels(labels, name="cells_components")
+_result = {"threshold": thr, "n_components": int(labels.max())}
 ```
 
-If `skimage` is missing → `install_packages(["scikit-image"])` first.
+If `skimage` is missing, the call returns `executed: false` with an `ImportError`. Install into napari's env (`pip install scikit-image`) and retry — there is no in-band package installer in this plugin.
 
-For a more structured version, paste `scripts/apply_filter.py` and call `apply_filter("cells", "threshold_otsu")`.
+For more structure, paste `scripts/apply_filter.py` and end with `_result = apply_filter("cells", "threshold_otsu")`.
 
 ---
 
 ## 3. Switch to 3D and rotate the camera
 
-```text
-configure_viewer(ndisplay=3)              → {"status":"ok","ndisplay":3,...}
-configure_viewer(angles=[30, 45, 0],
-                 zoom=1.5)                → camera oriented
-screenshot()                              → 3D view PNG
+```python
+viewer.dims.ndisplay = 3
+viewer.reset_view()
+viewer.camera.angles = (30, 45, 0)          # (azimuth, elevation, roll) in degrees
+viewer.camera.zoom = 1.5
+viewer.screenshot(path="/tmp/view_3d.png", canvas_only=True)
+_result = {"angles": list(viewer.camera.angles), "zoom": float(viewer.camera.zoom),
+           "screenshot": "/tmp/view_3d.png"}
 ```
-
-`angles` is `[azimuth, elevation, roll]` in degrees. `reset_view=True` is useful before rotating to recenter.
 
 ---
 
-## 4. Sweep a temporal axis and capture every frame
+## 4. Sweep a temporal axis and save every frame to disk
 
-A `(T, Y, X)` image lays out time on `axis=0`. (Mirrors `tests/test_timelapse.py::test_timelapse_screenshot_basic`.)
+For `(T, Y, X)` data, time is axis 0. This recipe writes one PNG per timepoint and returns the list of paths — there is no inline image transport, so disk is the only mode for many-frame captures.
 
-```text
-add_layer(layer_type="image", data_var="movie")
-                                  → name="movie", shape=[T, Y, X]
-screenshot(axis=0, slice_range=":")
-                                  → list[ImageContent], one per frame
+```python
+from pathlib import Path
+
+outdir = Path("/tmp/sweep")
+outdir.mkdir(parents=True, exist_ok=True)
+
+axis = 0
+nsteps = int(viewer.dims.nsteps[axis])
+paths = []
+for i in range(nsteps):
+    viewer.dims.set_current_step(axis, i)
+    p = outdir / f"frame_{i:04d}.png"
+    viewer.screenshot(path=str(p), canvas_only=True)
+    paths.append(str(p))
+
+_result = {"n_frames": len(paths), "outdir": str(outdir), "first": paths[0], "last": paths[-1]}
 ```
 
-Variants:
-- Sub-range: `slice_range="0:10"`, `slice_range="::2"`, `slice_range="-5:"`.
-- Single frame: `slice_range="-1"` (last) or `"5"`.
-- **Many frames at full resolution:** `screenshot(axis=0, slice_range=":", save_dir="/tmp/frames")` → no inline images, no 1.3 MB cap; returns `{"paths": [...], "n_frames": N}`.
-- **Many frames inline (downscaled to fit):** `screenshot(axis=0, slice_range=":", interpolate_to_fit=True)` → all frames at lower resolution, total base64 ≤ 1.3 MB.
-- **Default inline (full resolution, may truncate):** the loop stops early once base64 would overshoot 1.3 MB. Don't trust frame count = slice length.
-
-For grids and arbitrary index lists, paste `scripts/screenshot_grid.py`.
+For arbitrary index sets or a stitched montage, paste `scripts/screenshot_grid.py` and call `capture_grid(axis=0, indices=[0, 5, 10, 15], save_dir="/tmp/grid")`.
 
 ---
 
-## 5. Batch process many files
+## 5. Batch process many files (load → filter → save → unload)
 
-```text
-for path in paths:
-    add_layer(layer_type="image", path=path)   → name = filename stem
-    execute_code(f"""
-from skimage.filters import gaussian
-img = viewer.layers[{name!r}].data
-viewer.add_image(gaussian(img, sigma=2),
-                 name={name!r} + '_smooth')
-""")
-    save_layer_data(name + "_smooth",
-                    f"/out/{name}_smooth.tif")
-    remove_layer(name)
-    remove_layer(name + "_smooth")
+```python
+from pathlib import Path
+from scipy.ndimage import gaussian_filter
+import tifffile
+
+inputs = sorted(Path("/data/in").glob("*.tif"))
+outdir = Path("/data/out")
+outdir.mkdir(parents=True, exist_ok=True)
+
+results = []
+for p in inputs:
+    viewer.open(str(p))
+    l = viewer.layers[-1]
+    blurred = gaussian_filter(np.asarray(l.data), sigma=2.0)
+    out_path = outdir / f"{p.stem}_smooth.tif"
+    tifffile.imwrite(str(out_path), blurred)
+    results.append({"in": str(p), "out": str(out_path), "shape": tuple(blurred.shape)})
+    # Free the viewer — many layers get slow.
+    viewer.layers.remove(l)
+
+_result = {"n": len(results), "results": results}
 ```
 
-Why mix `add_layer` (tool) and `viewer.add_image` (in `execute_code`)? Because `add_layer(data_var=...)` requires the array to already exist in the namespace; doing it in one `execute_code` block is shorter when the array is computed there anyway.
-
-If you want the layers to stay around, skip `remove_layer` — but watch the layer count, both tools and screenshots get slow with hundreds of layers.
+Send via `napari_client.py --file batch.py`. Heavy batches may approach the 300 s Qt-thread timeout; in that case chunk the file list and send a separate call per chunk (intermediate progress is fine to print, but it'll lose the `_result` payload — stdout wins).
 
 ---
 
 ## 6. Persist layer artifacts
 
-`save_layer_data` infers format from extension. Choose the right extension for the layer type — see [tools.md](tools.md#save_layer_dataname-path-format) for the compatibility matrix.
+The plugin doesn't ship a generic layer-saver — pick the right writer for the data type.
 
-```text
-# Image / Labels → tiff (lossless), png (lossless 2D), jpg (lossy)
-save_layer_data("nuclei_seg", "/out/nuclei_seg.tif")
+```python
+import tifffile
+import numpy as np
 
-# Points / Tracks / Vectors → csv (table) or npy (raw)
-save_layer_data("centroids", "/out/centroids.csv")    # CSV with axis-N header
-save_layer_data("tracks", "/out/tracks.csv")          # CSV with track_id,axis-N
-save_layer_data("flow", "/out/flow.npy")              # raw vectors
+# Image / Labels → tiff (lossless, ND-friendly)
+tifffile.imwrite("/out/nuclei_seg.tif",
+                 np.asarray(viewer.layers["nuclei_seg"].data))
 
-# Anything → npy (numpy raw, no metadata)
-save_layer_data("any_layer", "/out/dump.npy")
+# Points / Tracks / Vectors → csv (table form)
+points = np.asarray(viewer.layers["centroids"].data)
+header = ",".join(f"axis-{i}" for i in range(points.shape[1]))
+np.savetxt("/out/centroids.csv", points, delimiter=",", header=header, comments="")
+
+# Anything → npy (raw, no metadata)
+np.save("/out/raw_dump.npy", np.asarray(viewer.layers["raw"].data))
+
+_result = {"saved": ["/out/nuclei_seg.tif", "/out/centroids.csv", "/out/raw_dump.npy"]}
 ```
 
-`csv` on an Image/Labels layer (or `tif` on a Points layer) returns a structured error — the tool refuses incompatible combinations rather than silently producing garbage.
+For PNG/JPG of a single 2D slice, use `PIL`:
+
+```python
+from PIL import Image as _PIL
+arr = np.asarray(viewer.layers["raw"].data).astype(np.uint8)
+_PIL.fromarray(arr).save("/out/raw.png")
+```

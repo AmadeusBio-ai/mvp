@@ -1,121 +1,149 @@
 ---
 name: napari
-description: Use when operating a napari image viewer through the napari-mcp MCP server — i.e. anytime the user asks to "load an image", "add a layer", "take a screenshot", "switch to 3D", "segment cells", "navigate the timelapse", "run code in napari", or whenever any `mcp__napari-mcp__*` tool is in scope. Covers standalone mode (Claude owns the viewer) and plugin/bridge mode (Claude controls a running napari session).
+description: Use when operating a napari image viewer via the napari-mcp plugin — i.e. whenever the user asks to "load an image", "add a layer", "take a screenshot", "switch to 3D", "segment cells", "navigate the timelapse", "run code in napari", or any task that needs the running napari window. The plugin listens on a TCP socket; this skill teaches how to launch it and what Python to send.
 ---
 
-# napari-mcp
+# napari
 
-This skill is for driving a napari viewer through the `mcp__napari-mcp__*` tool family. It tells you which tool to reach for, which invariants matter, and which gotchas bite if forgotten.
+The `napari-mcp` plugin (installed into napari's Python env from `/home/yangyi/Code/napari-mcp-plugin/`) gives an external client a single operation: **`execute` arbitrary Python against the live `napari.Viewer`**. Everything else — loading images, sweeping sliders, taking screenshots — is just napari's Python API sent over the socket. This skill tells you how to launch the viewer, how to call the socket, and which Python idioms to reach for.
 
-## 1. Mode check first
+## 1. Launch & connect
 
-Always call `session_information` before assuming a viewer exists. Branch on `session_type`:
+The plugin is auto-started by opening its dock widget. Run this **same command on Linux, macOS, and Windows** — no platform branching:
 
-- **`napari_mcp_standalone_session`** with `viewer: null` → call `init_viewer` to create one. `init_viewer` and `close_viewer` are available; you own the viewer's lifecycle.
-- **`napari_mcp_standalone_session`** with viewer info populated → a viewer already exists; proceed.
-- **`napari_bridge_session`** → the user's running napari process owns the viewer. `init_viewer` and `close_viewer` are **NOT registered** in this mode (`bridge_server.py` removes them) — do not call them. Mutations are dispatched onto the Qt main thread.
-- Call failed entirely → assume standalone, call `init_viewer`.
+```bash
+napari -w napari-mcp 'MCP Server'
+```
 
-See [references/modes.md](references/modes.md) for the full comparison and the subtler proxy-fallthrough behavior in `auto-detect` mode.
+Widget name and plugin id are fixed by `napari-mcp-plugin/src/napari_mcp/napari.yaml` (`name: napari-mcp`, `display_name: MCP Server`). The widget calls `_start_server()` on construction, so launching this way drops you straight into a listening state on port **9877** (`_widget.py:36` `DEFAULT_PORT = 9877` — note: the upstream README still says 9876, it's stale; trust the widget).
 
-## 2. Tool decision table
+Use the launcher script — it's idempotent and cross-platform:
 
-| Goal | Tool |
+```bash
+python skills/napari/scripts/launch_napari.py
+```
+
+- If port 9877 is already open, exits 0 immediately.
+- Otherwise spawns the launch command detached from this process and polls until the port responds (≤30 s).
+- Exit 1 if the port never comes up; exit 2 if the `napari` binary isn't on PATH.
+
+If napari fails to start, check `napari --info` and confirm `napari-mcp` appears under Plugins. If it doesn't, the plugin isn't installed into napari's env — `pip install -e /home/yangyi/Code/napari-mcp-plugin` and retry.
+
+## 2. The one operation
+
+Send a single JSON request, get a single JSON response:
+
+```text
+request   {"type": "execute", "code": "<python>"}
+success   {"status": "success", "result": {"executed": true,  "output": "<str>"}}
+user err  {"status": "success", "result": {"executed": false, "error":  "<str>"}}
+srv err   {"status": "error",   "message": "<str>"}
+```
+
+Call it via the helper (handles framing, exit codes, error reporting):
+
+```bash
+python skills/napari/scripts/napari_client.py "viewer.add_image(np.random.rand(256,256), name='r')"
+python skills/napari/scripts/napari_client.py --file path/to/snippet.py
+cat snippet.py | python skills/napari/scripts/napari_client.py --stdin
+```
+
+Exit codes: `0` success+executed, `3` success-but-user-code-raised, `4` server error, `5` connection refused. **Always check the exit code or parse the JSON — `status: success` with `executed: false` is a user-code error, not a success.**
+
+Full protocol reference: [references/protocol.md](references/protocol.md).
+
+## 3. Code-author conventions
+
+Inside the `code` you send, three names are pre-bound (`_executor.py:33-37`):
+
+| Name | What it is |
 |---|---|
-| See what's loaded (cheap) | `list_layers` |
-| Detailed metadata for one layer, optionally with data/stats | `get_layer` |
-| Load image/labels from disk | `add_layer(layer_type="image", path=...)` |
-| Add layer from an array already in the exec namespace | `add_layer(layer_type=..., data_var="var")` |
-| Add layer from inline data (small coordinates, shapes, etc.) | `add_layer(layer_type=..., data=[[...]])` |
-| Tweak one layer's render props | `set_layer_properties` |
-| Tweak many layers at once (by type or glob) | `apply_to_layers` |
-| Reorder a layer in the stack | `reorder_layer(name, index=…)` / `before=…` / `after=…` |
-| Camera, 2D ↔ 3D, slider position, grid | `configure_viewer` |
-| Reset camera to fit | `configure_viewer(reset_view=True)` |
-| Show user the canvas | `screenshot()` (canvas-only by default; ~150 KB auto-downsized) |
-| Sweep an axis and grab frames | `screenshot(axis=, slice_range=)` |
-| Run arbitrary Python in the napari namespace | `execute_code` |
-| Missing dependency | `install_packages([...])` then `execute_code` |
-| Output was truncated / large data deferred | `read_output(output_id)` |
-| Persist a layer to disk | `save_layer_data(name, path)` |
-| Remove a layer | `remove_layer(name)` |
-| Stop the standalone viewer (standalone only) | `close_viewer` |
-| Discover state of session/viewer | `session_information` |
+| `viewer` | the live `napari.Viewer` |
+| `napari` | the napari module |
+| `np` | numpy |
 
-Per-tool parameter and return shapes live in [references/tools.md](references/tools.md).
+To return a value back across the socket, either:
 
-## 3. Non-obvious invariants
+- **Print** it (`print(json.dumps(payload))`) — stdout is captured and returned as `output`.
+- **Set `_result`** (`_result = expr`) — `str(_result)` is returned as `output`.
 
-These are the parts that bite if forgotten — they are not obvious from the tool signatures alone.
+**stdout wins** if both are set (`_executor.py:50-56`). For structured data, `print(json.dumps(...))` on the server side + `json.loads(response["result"]["output"])` on the client side is the clean pattern.
 
-### Persistent execution namespace
-`execute_code` shares a **persistent** namespace across calls within one server lifetime. `viewer`, `napari`, and `np` are pre-bound by the server itself — do not re-import unless a previous call errored and corrupted state. Variables you create (`data = ...`, `arr = ...`) survive into the next `execute_code` call and into `add_layer(data_var="...")`.
+## 4. Decision table — goal → Python idiom
 
-### `add_layer` data source is XOR
-Provide **exactly one** of `path` / `data` / `data_var`. Passing more than one returns an error. `path` only works for `image` and `labels`; for `surface` you must use `data_var` (surfaces are a tuple `(vertices, faces[, values])`, not JSON-friendly).
+| Goal | Code to send |
+|---|---|
+| List layers | `_result = [l.name for l in viewer.layers]` |
+| Load from disk (autodetect) | `viewer.open('/path/to/file')` |
+| Add image array | `viewer.add_image(arr, name='x', colormap='viridis')` |
+| Add labels | `viewer.add_labels(mask.astype(np.int32), name='seg')` |
+| Tweak render props | `l = viewer.layers['x']; l.contrast_limits = [0, 4096]; l.colormap = 'magma'` |
+| Remove layer | `del viewer.layers['x']` |
+| Reorder | `viewer.layers.move(viewer.layers.index(viewer.layers['x']), 0)` |
+| Switch to 3D | `viewer.dims.ndisplay = 3` |
+| Reset camera | `viewer.reset_view()` |
+| Rotate camera | `viewer.camera.angles = (30, 45, 0); viewer.camera.zoom = 1.5` |
+| Step slider | `viewer.dims.set_current_step(0, 10)` |
+| Grid mode | `viewer.grid.enabled = True; viewer.grid.shape = (-1, 3)` |
+| Screenshot | `viewer.screenshot(path='/tmp/x.png', canvas_only=True)` — then `Read /tmp/x.png` |
+| Apply filter | `from scipy.ndimage import gaussian_filter; viewer.add_image(gaussian_filter(np.asarray(viewer.layers['x'].data), 2), name='x_blur')` |
+| Save layer | `import tifffile; tifffile.imwrite('/out/seg.tif', np.asarray(viewer.layers['seg'].data))` |
+| Inspect everything | paste `scripts/dump_session.py` and end with `_result = dump_session()` |
 
-### Layer type aliases
-`layer_type` accepts singular/plural aliases: `images→image`, `label→labels`, `point→points`, `shape→shapes`, `vector→vectors`, `track→tracks`, `surfaces→surface`. Canonical form is fine; "Image" with capital I is not.
+Full API surface: [references/api.md](references/api.md). End-to-end pipelines: [references/recipes.md](references/recipes.md).
 
-### Screenshot byte budgets
-- **Single inline `screenshot()`**: auto-downscales the PNG to stay under ~150 KB (≈200 KB base64). If you need exact pixels, pass `save_path=...` and read the file from disk instead.
-- **Timelapse `screenshot(axis=, slice_range=)`**: with `interpolate_to_fit=True`, frames are downscaled so total base64 stays under **1,309,246 bytes** (≈1.3 MB). Without it, frames render at full resolution but the loop **stops early** once accumulated base64 would overshoot that cap — so you may get fewer frames than `slice_range` implies. To capture every frame at full resolution, use `save_dir=...`.
+## 5. Invariants (the things that bite)
 
-### Slice syntax (two different parsers)
-- **`screenshot(slice_range=...)`** uses Python-slice syntax for a **single axis**: `"1:5"`, `":6"`, `"::2"`, `"-1"` (last frame), `"5"` (single index). `"1:2:3:4"` is invalid; `"::0"` raises "step cannot be 0".
-- **`get_layer(slicing=...)`** uses **comma-separated** multi-axis slicing: `"0, :5, :5"` → `arr[0, :5, :5]`. Only ints, colons, and commas — no arbitrary expressions or steps validation here; same `:` rules per component.
+### Fresh exec namespace per call
+`_executor.py:33` builds a new `exec_globals` dict every time. **Variables do NOT persist across calls.** A two-call sequence like
 
-### `output_id` and `read_output`
-- `execute_code` default truncates stdout/stderr to **30 lines** and returns an `output_id`. Pass `line_limit=-1` for unbounded output, but only when you actually need it (it returns a warning and consumes tokens).
-- `get_layer(include_data=True)` returning a numeric array larger than `max_elements` (default **1,000**, max **1,000,000**) stashes it and returns `output_id` instead of inlining — fetch with `read_output`. Look for the `"_large_data"` pattern: you'll see `"output_id"` and `"message"` instead of the data inline.
-- `install_packages` truncates the same way.
-- Output storage is FIFO-evicted at 1,000 items (env: `NAPARI_MCP_MAX_OUTPUT_ITEMS`).
+```bash
+napari_client.py "arr = np.random.rand(256,256)"
+napari_client.py "viewer.add_image(arr)"     # NameError: arr
+```
 
-### `install_packages` constraints
-Package names are validated against a strict regex — **URL/VCS specifiers are rejected** (no `git+https://...`, no local paths). Use standard pip name + version specifiers. Default timeout is **240 s**.
+fails on the second call. Pack multi-step pipelines into one `code` blob, or rebuild state by reading from `viewer.layers` at the start of each call (the viewer itself persists — only your local Python state doesn't).
 
-### `configure_viewer` paired params and clamping
-- `dims_axis` and `dims_value` **must be provided together** or omitted together.
-- `ndisplay` must be `2` or `3`; `zoom` must be `> 0`.
-- `dims_value` is silently **clamped** to `[0, nsteps-1]` and a `warning` is added to the response — check the response for `"warning"` after slider changes.
+### User-code errors come back as `executed: false`, not `status: error`
+`status: error` means the *transport* rejected the request (empty code, no callback). A Python exception in your code returns `{"status": "success", "result": {"executed": false, "error": "..."}}`. Branch on `result.executed`, not just `status`.
 
-### Bridge vs standalone `execute_code` timeouts
-- **Standalone**: runs synchronously on the asyncio thread (which shares with Qt via the event pump). **No timeout.** A hung script blocks subsequent tool calls.
-- **Bridge**: dispatched onto the Qt main thread with a hard **600 s timeout**. On timeout, an `output_id` and an error message are returned, but the code may still be running inside napari — break long work into chunks.
+### One client at a time
+The server accepts a single connection at a time (`_socket_server.py:75`). Don't fan out parallel `napari_client.py` calls — they'll queue at the OS level and you may get connection refusals mid-flight. Issue calls serially.
 
-### `auto-detect` mode proxy fallthrough
-In auto-detect mode, a fixed subset of tools (`list_layers`, `add_layer` for image paths, `screenshot`, `execute_code`, `install_packages`, `session_information`, `init_viewer`) tries to proxy to a running bridge on `localhost:NAPARI_MCP_BRIDGE_PORT` (default `9999`). Other tools (`get_layer`, `set_layer_properties`, `reorder_layer`, `apply_to_layers`, `configure_viewer`, `save_layer_data`, `remove_layer`, `read_output`, `close_viewer`) do **not** proxy — they operate on the local viewer, which may not exist. Either install into the bridged napari directly or stick to the proxied tool list. Details in [references/modes.md](references/modes.md).
+### 300 s Qt-thread timeout
+Long-running code hits a hard 300 s cap (`_executor.py:89`). Break heavy pipelines into chunks; results landing on `viewer.layers` survive across calls.
 
-## 4. Recipes
+### No inline screenshot transport
+Unlike the old plugin there is no base64 PNG response. Always `viewer.screenshot(path='/tmp/x.png', ...)` and then `Read /tmp/x.png` from the Claude side — Claude is multimodal and renders the PNG inline.
 
-End-to-end tool sequences in [references/recipes.md](references/recipes.md):
+### Imports don't carry over
+Because the namespace is fresh, `from scipy.ndimage import gaussian_filter` must appear inside every `code` blob that uses it. Don't write recipes that assume earlier imports survived.
 
-1. Load image → set colormap → screenshot.
-2. Filter a layer via `execute_code` → add the result as a new layer.
-3. Switch to 3D and rotate the camera.
-4. Sweep a temporal axis and capture every frame.
-5. Batch process many files (add → process → save).
-6. Persist layer artifacts (image/labels → tiff/png; points/tracks/vectors → csv; anything → npy).
+## 6. Recipes
 
-## 5. Helper scripts
+Six end-to-end pipelines in [references/recipes.md](references/recipes.md), each as a single `code` blob to send via `napari_client.py --file`: load → colormap → screenshot; filter via scipy → add as new Labels; switch to 3D + rotate; sweep an axis and save frames to disk; batch process many files; persist layer artifacts.
 
-Three drop-in helpers — paste their source into `execute_code`, then call the defined function. They assume the standard pre-bound `viewer`, `napari`, `np`.
+## 7. Helper scripts
 
-- [`scripts/dump_session.py`](scripts/dump_session.py) — print every field `list_layers`/`session_information` skips (dtype, world bounds, scale, translate, full camera state). Use when you need detail those tools don't surface.
-- [`scripts/apply_filter.py`](scripts/apply_filter.py) — `apply_filter(layer_name, kind, **kwargs)` for `kind ∈ {"gaussian", "median", "threshold_otsu", "label"}`. Adds the result as a new layer (Image for filters, Labels for threshold/label).
-- [`scripts/screenshot_grid.py`](scripts/screenshot_grid.py) — `capture_grid(axis, indices, save_dir=None)` to step a dim and screenshot at each index. Bypasses the timelapse ~1.3 MB cap by saving to disk or returning a stitched numpy montage.
+Drop-in modules to paste via `napari_client.py --file`. Each defines a function and ends with `_result = the_function(...)` so its return value comes back as `output`.
 
-## 6. Links
+- [`scripts/launch_napari.py`](scripts/launch_napari.py) — idempotent launcher (not for `--file`, run directly with `python`).
+- [`scripts/napari_client.py`](scripts/napari_client.py) — the client itself (not for `--file`).
+- [`scripts/dump_session.py`](scripts/dump_session.py) — exhaustive `dump_session()` covering every layer/viewer field that the one-liner table skips (world bounds, scale, translate, full camera state).
+- [`scripts/apply_filter.py`](scripts/apply_filter.py) — `apply_filter(layer_name, kind, **kwargs)` for `kind ∈ {"gaussian", "median", "threshold_otsu", "label"}`. Adds the result as a new layer.
+- [`scripts/screenshot_grid.py`](scripts/screenshot_grid.py) — `capture_grid(axis, indices, save_dir=...)` to step a dim and screenshot each index. Disk mode is the recommended default (no inline transport anyway).
+
+## 8. Links
 
 Skill files:
-- [references/tools.md](references/tools.md) — per-tool parameter/return reference.
-- [references/recipes.md](references/recipes.md) — six end-to-end recipes.
-- [references/modes.md](references/modes.md) — standalone vs bridge vs auto-detect.
+- [references/protocol.md](references/protocol.md) — wire protocol, response shapes, framing rules.
+- [references/api.md](references/api.md) — napari Python API cheatsheet.
+- [references/recipes.md](references/recipes.md) — six end-to-end pipelines as code blobs.
 
-Code-side references (read these when the skill is ambiguous):
-- `src/napari_mcp/server.py` — every tool's authoritative signature and behavior.
-- `src/napari_mcp/bridge_server.py` — bridge overrides for `session_information`, `add_layer`, `execute_code`; lifecycle-tool removal.
-- `src/napari_mcp/_helpers.py` — `LAYER_TYPE_ALIASES`, `build_layer_detail`, `create_layer_on_viewer`, `run_code`, `build_truncated_response`.
-- `src/napari_mcp/state.py` — `StartupMode`, `proxy_to_external`, output storage.
-- `docs/examples/direct_mcp_client.py`, `docs/examples/anthropic_integration.py` — concrete call sequences.
-- `tests/test_integration.py`, `tests/test_timelapse.py` — known-good multi-tool flows.
+Plugin source (read-only, for verification):
+- `napari-mcp-plugin/src/napari_mcp/_socket_server.py` — TCP server, JSON framing.
+- `napari-mcp-plugin/src/napari_mcp/_executor.py` — Qt-thread executor, exec namespace, `_result`/stdout precedence.
+- `napari-mcp-plugin/src/napari_mcp/_widget.py` — dock widget, port (`DEFAULT_PORT = 9877`), auto-start.
+- `napari-mcp-plugin/test_client.py` — canonical framing-loop reference for any client.
+
+napari documentation: <https://napari.org/dev/api/index.html>.

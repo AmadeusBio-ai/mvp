@@ -1,8 +1,14 @@
 """Exhaustive session/layer dump for napari-mcp.
 
-Paste the body of this file into ``execute_code``, then call ``dump_session()``.
-Use when ``list_layers`` / ``session_information`` omit a field you need
-(world bounds, scale, translate, full camera state, dtype, etc.).
+Send this whole file to the napari-mcp socket via ``napari_client.py``:
+
+    python skills/napari/scripts/napari_client.py --file skills/napari/scripts/dump_session.py
+
+The trailing ``dump_session()`` call at the bottom of this file leaves the dict
+as the last expression — but the socket protocol returns ``output``, not
+``result_repr``, so the file ends by **printing JSON** to capture the payload.
+Use when a quick one-liner over ``viewer.layers`` won't surface the field you
+need (world bounds, scale, translate, full camera state, dtype, etc.).
 
 Assumes the standard pre-bound names: ``viewer``, ``napari``, ``np``.
 """
@@ -119,6 +125,7 @@ def dump_session() -> dict:
     return out
 
 
-# Calling at end ensures the dict is the last expression so execute_code
-# returns repr(dump_session()) as result_repr.
-dump_session()
+# Print JSON so the socket response carries the structured dump in
+# result.output, which the client can json.loads on the other side.
+import json as _json
+print(_json.dumps(dump_session(), default=str))

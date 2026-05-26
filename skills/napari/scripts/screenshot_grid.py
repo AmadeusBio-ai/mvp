@@ -1,12 +1,21 @@
 """Capture screenshots at arbitrary slider positions.
 
-Sidesteps the timelapse-mode 1.3 MB inline cap by either saving frames to disk
-or returning a stitched numpy montage.
+The new socket protocol has no inline image transport, so ``save_dir`` is the
+recommended mode — it writes one PNG per frame to disk, which Claude can then
+``Read`` directly. The in-memory montage path is kept for callers that want a
+stitched array (you'll need to ``np.save`` it yourself before returning).
 
-Paste this file into ``execute_code``, then call:
+Use as a function library inside a code blob sent via ``napari_client.py``:
 
-    capture_grid(axis=0, indices=[0, 5, 10, 15], save_dir="/tmp/grid")
-    montage = capture_grid(axis=0, indices=range(0, 20, 2))   # returns ndarray
+    # at the bottom of the snippet you send:
+    import json
+    print(json.dumps(capture_grid(axis=0, indices=[0, 5, 10, 15],
+                                  save_dir="/tmp/grid"),
+                     default=str))
+
+then:
+
+    python skills/napari/scripts/napari_client.py --file my_snippet.py
 
 Assumes the standard pre-bound names: ``viewer``, ``napari``, ``np``.
 """
