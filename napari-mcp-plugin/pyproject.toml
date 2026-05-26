@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "napari-mcp"
+version = "0.1.0"
+description = "napari plugin exposing a socket server so external tools (e.g. an MCP client) can drive napari over TCP."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "napari-mcp" }]
+classifiers = [
+    "Framework :: napari",
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "License :: OSI Approved :: MIT License",
+]
+dependencies = [
+    "napari",
+    "qtpy",
+    "numpy",
+]
+
+[project.entry-points."napari.manifest"]
+napari-mcp = "napari_mcp:napari.yaml"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"napari_mcp" = ["napari.yaml"]
