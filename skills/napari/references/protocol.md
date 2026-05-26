@@ -1,6 +1,6 @@
 # napari-mcp plugin wire protocol
 
-Source of truth: `/home/yangyi/Code/napari-mcp-plugin/src/napari_mcp/_socket_server.py` and `_executor.py`. Read those if anything here is ambiguous.
+Source of truth: `napari-mcp-plugin/src/napari_mcp/_socket_server.py` and `_executor.py`. Read those if anything here is ambiguous.
 
 ## Transport
 

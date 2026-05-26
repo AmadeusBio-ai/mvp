@@ -33,6 +33,23 @@ The `pymol-molecular-visualization` skill talks to a live PyMOL session over `lo
 
 See [PyMol-Integration](https://www.google.com/search?q=/docs/PyMol-Integration) for full PATH/wrapper setup on Windows/macOS/Linux.
 
+### napari side (one-time, only if you use the napari agent)
+
+The `napari` skill talks to a live napari session over `localhost:9877` via the `napari-mcp` plugin that ships in this repo under `napari-mcp-plugin/`. The plugin must be installed into the *same* Python environment that runs `napari` — napari discovers it via a `napari.manifest` entry point, so installing into the wrong env silently fails. Pick the line that matches how you installed napari:
+
+```bash
+# Dedicated venv (e.g. ~/.napari-env)
+~/.napari-env/bin/pip install -e ./napari-mcp-plugin
+
+# Conda env (replace `napari-env` with your env name)
+conda run -n napari-env pip install -e ./napari-mcp-plugin
+
+# System / current-shell Python (only if `which napari` lives in this env)
+pip install -e ./napari-mcp-plugin
+```
+
+Verify with `napari --info` — `napari-mcp` must appear under `Plugins`. Then `python skills/napari/scripts/launch_napari.py` starts napari with the MCP server listening on port 9877.
+
 
 #### Credits
 

@@ -5,7 +5,7 @@ description: Use when operating a napari image viewer via the napari-mcp plugin 
 
 # napari
 
-The `napari-mcp` plugin (installed into napari's Python env from `/home/yangyi/Code/napari-mcp-plugin/`) gives an external client a single operation: **`execute` arbitrary Python against the live `napari.Viewer`**. Everything else — loading images, sweeping sliders, taking screenshots — is just napari's Python API sent over the socket. This skill tells you how to launch the viewer, how to call the socket, and which Python idioms to reach for.
+The `napari-mcp` plugin (installed into napari's Python env from `napari-mcp-plugin/` in this repo) gives an external client a single operation: **`execute` arbitrary Python against the live `napari.Viewer`**. Everything else — loading images, sweeping sliders, taking screenshots — is just napari's Python API sent over the socket. This skill tells you how to launch the viewer, how to call the socket, and which Python idioms to reach for.
 
 ## 1. Launch & connect
 
@@ -27,7 +27,7 @@ python skills/napari/scripts/launch_napari.py
 - Otherwise spawns the launch command detached from this process and polls until the port responds (≤30 s).
 - Exit 1 if the port never comes up; exit 2 if the `napari` binary isn't on PATH.
 
-If napari fails to start, check `napari --info` and confirm `napari-mcp` appears under Plugins. If it doesn't, the plugin isn't installed into napari's env — `pip install -e /home/yangyi/Code/napari-mcp-plugin` and retry.
+If napari fails to start, check `napari --info` and confirm `napari-mcp` appears under Plugins. If it doesn't, the plugin isn't installed into napari's env — follow the env-aware install in the project README (`<napari-env-pip> install -e ./napari-mcp-plugin`) and retry.
 
 ## 2. The one operation
 

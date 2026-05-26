@@ -104,8 +104,8 @@ def main() -> int:
     print(
         f"timed out after {args.timeout:.0f}s waiting for {args.host}:{args.port}. "
         "Check that the napari-mcp plugin is installed in the same env as napari "
-        "(`pip install -e /home/yangyi/Code/napari-mcp-plugin`) and that "
-        "`napari --info` lists it under Plugins.",
+        "(see the napari-side install section in the project README — must use the "
+        "pip that lives in napari's env) and that `napari --info` lists it under Plugins.",
         file=sys.stderr,
     )
     return 1
